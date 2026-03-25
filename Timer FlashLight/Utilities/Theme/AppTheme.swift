@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 /// Design system for Timer FlashLight app
 /// Contains colors, typography, spacing, and other design tokens
@@ -46,76 +47,62 @@ struct AppTheme {
         static let sairaFontName = "Saira"
         static let soraFontName = "Sora"
         
-        // Saira font styles (Variable font - weight is handled by the font itself)
+        /// Scale factor for point sizes on iPad (1.25); 1.0 on phone.
+        static var contentScale: CGFloat { UIDevice.current.userInterfaceIdiom == .pad ? 1.25 : 1.0 }
+        /// Use for explicit font sizes so they scale on iPad (e.g. .font(.custom(..., size: Typography.scaledSize(24)))).
+        static func scaledSize(_ size: CGFloat) -> CGFloat { size * contentScale }
+        
+        // Saira font styles (size is scaled on iPad)
         static func saira(size: CGFloat, weight: Font.Weight = .regular, lineHeight: CGFloat? = nil) -> Font {
-            // Variable fonts handle weight internally
-            return .custom(sairaFontName, size: size)
+            return .custom(sairaFontName, size: size * contentScale)
         }
         
-        // Sora font styles (Variable font - weight is handled by the font itself)
+        // Sora font styles (size is scaled on iPad)
         static func sora(size: CGFloat, weight: Font.Weight = .regular, lineHeight: CGFloat? = nil) -> Font {
-            // Variable fonts handle weight internally
-            return .custom(soraFontName, size: size)
+            return .custom(soraFontName, size: size * contentScale)
         }
         
-        // Predefined text styles (based on design specs)
-        
-        // Headline - Saira 16px, 700, line-height 28px
-        static let headline = saira(size: 16, weight: .bold)
-        
-        // Body - Saira 16px, 400, line-height 20px
-        static let body = saira(size: 16, weight: .regular)
-        
-        // Body Light - Saira 16px, 300, line-height 20px
-        static let bodyLight = saira(size: 16, weight: .light)
-        
-        // Body Bold - Saira 16px, 700
-        static let bodyBold = saira(size: 16, weight: .bold)
-        
-        // Title - Saira 20px, 400
-        static let title = saira(size: 20, weight: .regular)
-        
-        // Title Success - Saira 20px, 400, color #44D62C
-        static let titleSuccess = saira(size: 20, weight: .regular)
-        
-        // Caption - Saira 13px, 500, line-height 20px
-        static let caption = saira(size: 13, weight: .medium)
-        
-        // Body Sora - Sora 16px, 400, line-height 20px
-        static let bodySora = sora(size: 16, weight: .regular)
-        
-        // Body Sora Light - Sora 16px, 400, color #CCC
-        static let bodySoraLight = sora(size: 16, weight: .regular)
-        
-        // Body Sora Very Light - Sora 16px, 400, color #E6E6E6
-        static let bodySoraVeryLight = sora(size: 16, weight: .regular)
+        // Predefined text styles (base sizes; saira/sora already apply contentScale)
+        static var headline: Font { saira(size: 16, weight: .bold) }
+        static var body: Font { saira(size: 16, weight: .regular) }
+        static var bodyLight: Font { saira(size: 16, weight: .light) }
+        static var bodyBold: Font { saira(size: 16, weight: .bold) }
+        static var title: Font { saira(size: 20, weight: .regular) }
+        static var titleSuccess: Font { saira(size: 20, weight: .regular) }
+        static var caption: Font { saira(size: 13, weight: .medium) }
+        static var bodySora: Font { sora(size: 16, weight: .regular) }
+        static var bodySoraLight: Font { sora(size: 16, weight: .regular) }
+        static var bodySoraVeryLight: Font { sora(size: 16, weight: .regular) }
     }
     
-    // MARK: - Spacing
+    // MARK: - Spacing (scaled on iPad)
     
     struct Spacing {
-        static let xs: CGFloat = 8
-        static let sm: CGFloat = 12
-        static let md: CGFloat = 16
-        static let lg: CGFloat = 24
-        static let xl: CGFloat = 32
-        static let xxl: CGFloat = 64
-        static let xxxl: CGFloat = 72
+        private static var scale: CGFloat { UIDevice.current.userInterfaceIdiom == .pad ? 1.25 : 1.0 }
+        static var xs: CGFloat { 8 * scale }
+        static var sm: CGFloat { 12 * scale }
+        static var md: CGFloat { 16 * scale }
+        static var lg: CGFloat { 24 * scale }
+        static var xl: CGFloat { 32 * scale }
+        static var xxl: CGFloat { 64 * scale }
+        static var xxxl: CGFloat { 72 * scale }
     }
     
-    // MARK: - Corner Radius
+    // MARK: - Corner Radius (scaled on iPad)
     
     struct CornerRadius {
-        static let small: CGFloat = 9
-        static let medium: CGFloat = 20
-        static let large: CGFloat = 30
-        static let extraLarge: CGFloat = 100
+        private static var scale: CGFloat { UIDevice.current.userInterfaceIdiom == .pad ? 1.25 : 1.0 }
+        static var small: CGFloat { 9 * scale }
+        static var medium: CGFloat { 20 * scale }
+        static var large: CGFloat { 30 * scale }
+        static var extraLarge: CGFloat { 100 * scale }
     }
     
     // MARK: - Borders
     
     struct Border {
-        static let width: CGFloat = 1
+        private static var scale: CGFloat { UIDevice.current.userInterfaceIdiom == .pad ? 1.25 : 1.0 }
+        static var width: CGFloat { 1 * scale }
         static let color = Colors.border
     }
 }

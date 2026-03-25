@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 /// Layout metrics for the timer bottom sheet.
 /// Same size for: expanded (any selection), unexpanded 2/5/10 Min, unexpanded Custom expanded.
@@ -47,58 +48,53 @@ struct TimerSheetLayout {
         let isMediumDetent = detent == PresentationDetent.medium
         let isExpanded = detent == PresentationDetent.large
         isCompactCustomOnly = isMediumDetent && isCustomExpanded
+        let scale = AppConstants.ipadScale
 
-        // Unexpanded + Other: top 36pt. Unexpanded + Custom: 24pt so content fits (title + CANCEL not cut off). Expanded: 48pt.
-        topPadding = isExpanded ? 48 : (isCompactCustomOnly ? 24 : 36)
-        // Space between "Set Timer" and preset grid; between preset grid and custom timer picker. Unexpanded + Custom: 16pt.
-        mainSpacing = isExpanded ? 48 : (isCompactCustomOnly ? 16 : 36)
-        // Bottom edge: zero padding so sheet sits flush with screen bottom
-        bottomPadding = 0
-        // Unexpanded + Custom: timer picker to SET btn 16pt. Else: flexible Spacer min length.
-        contentToActionsSpacerMinLength = isCompactCustomOnly ? 16 : AppTheme.Spacing.md
-        // Unexpanded + Other: fixed tight spacing between presets and SET (no expanding gap)
+        // Unexpanded + Other: top 36pt. Unexpanded + Custom: 24pt. Expanded: 48pt. (scaled on iPad)
+        topPadding = (isExpanded ? 48 : (isCompactCustomOnly ? 24 : 36)) * scale
+        mainSpacing = (isExpanded ? 48 : (isCompactCustomOnly ? 16 : 36)) * scale
+        bottomPadding = AppTheme.Spacing.lg
+        contentToActionsSpacerMinLength = isCompactCustomOnly ? 16 * scale : AppTheme.Spacing.md
         let isUnexpandedOther = isMediumDetent && !isCustomExpanded
         useFixedSpacingBetweenContentAndActions = isUnexpandedOther
         contentToActionsFixedSpacing = AppTheme.Spacing.md
 
-        actionButtonHeight = 48
-        actionButtonFontSize = 16
+        actionButtonHeight = 48 * scale
+        actionButtonFontSize = 16 * scale
         actionSpacing = AppTheme.Spacing.md
         horizontalPadding = AppTheme.Spacing.xl
 
-        // 3. Unexpanded custom: reduce preset (2 Min, 5 Min, 10 Min, Custom) size
         if isCompactCustomOnly {
             gridSpacing = AppTheme.Spacing.sm
-            presetFontSize = 14
-            radioSize = 18
-            radioCheckmarkSize = 9
-            presetVerticalPadding = 10
+            presetFontSize = 14 * scale
+            radioSize = 18 * scale
+            radioCheckmarkSize = 9 * scale
+            presetVerticalPadding = 10 * scale
             presetHorizontalPadding = AppTheme.Spacing.xs
-            pickerHeight = 120
-            pickerLabelFontSize = 14
-            pickerWheelFontSize = 15
-            pickerVStackSpacing = 4
+            pickerHeight = 120 * scale
+            pickerLabelFontSize = 14 * scale
+            pickerWheelFontSize = 15 * scale
+            pickerVStackSpacing = 4 * scale
         } else {
             gridSpacing = AppTheme.Spacing.md
-            presetFontSize = 16
-            radioSize = 20
-            radioCheckmarkSize = 10
-            presetVerticalPadding = 14
+            presetFontSize = 16 * scale
+            radioSize = 20 * scale
+            radioCheckmarkSize = 10 * scale
+            presetVerticalPadding = 14 * scale
             presetHorizontalPadding = AppTheme.Spacing.sm
-            // 1. Expanded custom: timer picker tall enough to show 2 values above and 2 below selected
             if isExpanded && isCustomExpanded {
-                pickerHeight = 220
-                pickerLabelFontSize = 18
-                pickerWheelFontSize = 20
-                pickerVStackSpacing = 8
+                pickerHeight = 220 * scale
+                pickerLabelFontSize = 18 * scale
+                pickerWheelFontSize = 20 * scale
+                pickerVStackSpacing = 8 * scale
             } else {
-                pickerHeight = 160
-                pickerLabelFontSize = 16
-                pickerWheelFontSize = 18
-                pickerVStackSpacing = 6
+                pickerHeight = 160 * scale
+                pickerLabelFontSize = 16 * scale
+                pickerWheelFontSize = 18 * scale
+                pickerVStackSpacing = 6 * scale
             }
         }
 
-        titleFontSize = 24
+        titleFontSize = 24 * scale
     }
 }

@@ -6,41 +6,66 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct ScreenLightView: View {
     // MARK: - Properties
-    
+
     @StateObject private var viewModel = ScreenLightViewModel()
     @Binding var isPresented: Bool
+    /// Called when timer completes: after restore/save/reset and dismiss, HomeView will show toast and suspend.
+    var onTimerCompletedAndDismissed: (() -> Void)? = nil
+    /// Called when Screen Light timer starts so Home can stop its timer (only one timer at a time).
+    var onScreenLightTimerDidStart: (() -> Void)? = nil
+    @EnvironmentObject private var purchaseManager: PurchaseManager
+    @EnvironmentObject private var premiumPresenter: PremiumSheetPresenter
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var timerSheetDetent: PresentationDetent = PresentationDetent.medium
+    @State private var showPaywallSheet: Bool = false
     
     // MARK: - Body
     
     var body: some View {
         ZStack {
-            // Full-screen color background
+            // Full-screen color background (base layer - no white gaps)
             viewModel.currentColor
                 .ignoresSafeArea()
                 .gesture(
                     DragGesture(minimumDistance: 50)
                         .onEnded { value in
-                            // Block swipe gestures when instruction is showing
                             guard !viewModel.showInstructionSheet else { return }
-                            
+                            let isPremium = purchaseManager.isPremiumUnlocked
                             if value.translation.width > 50 {
-                                // Swipe right - go to previous color
-                                viewModel.changeColor(direction: .right)
+                                viewModel.changeColor(direction: .right, isPremium: isPremium, onLimitReached: {
+                                    viewModel.showMenuBottomSheet = false
+                                    viewModel.showMenuCard = false
+                                    premiumPresenter.showPremiumFeatureAlert = true
+                                })
                             } else if value.translation.width < -50 {
-                                // Swipe left - go to next color
-                                viewModel.changeColor(direction: .left)
+                                viewModel.changeColor(direction: .left, isPremium: isPremium, onLimitReached: {
+                                    viewModel.showMenuBottomSheet = false
+                                    viewModel.showMenuCard = false
+                                    premiumPresenter.showPremiumFeatureAlert = true
+                                })
                             }
                         }
                 )
                 .onTapGesture {
-                    // Tap anywhere to toggle menu card (blocked when instruction is showing)
                     viewModel.toggleMenuCard()
                 }
+            
+            // Banner overlay at top (transparent container) — hidden when premium
+            if !purchaseManager.isPremiumUnlocked {
+                VStack(spacing: 0) {
+                    BannerAdView(adUnitID: AppConstants.AdMob.screenLightBanner)
+                        .frame(height: 50)
+                        .padding(.top, AppTheme.Spacing.sm)
+                        .background(Color.clear)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
             
             // Instruction alert overlay (blocks all interactions until dismissed)
             if viewModel.showInstructionSheet {
@@ -50,84 +75,115 @@ struct ScreenLightView: View {
             }
         }
         .onAppear {
-            // Save system brightness and set initial brightness
+            viewModel.onScreenLightTimerDidStart = onScreenLightTimerDidStart
             viewModel.saveSystemBrightness()
-            viewModel.setScreenLightBrightness(viewModel.screenLightBrightness)
-            
+            ScreenLightBrightnessStore.notifyScreenLightDidAppear(savedBrightness: viewModel.savedSystemBrightnessForRestore)
+            viewModel.applyCurrentBrightnessToSystem()
             viewModel.showMenuCard = true
             viewModel.showMenuBottomSheet = true
-            
-            // Prevent sleep mode
-            UIApplication.shared.isIdleTimerDisabled = true
+            // Clamp color to free limit when not premium (e.g. downgrade or first launch)
+            if !purchaseManager.isPremiumUnlocked && viewModel.currentColorIndex >= AppConstants.Premium.freeColorCount {
+                viewModel.currentColorIndex = AppConstants.Premium.freeColorCount - 1
+            }
         }
         .onDisappear {
-            // Restore system brightness
+            ScreenLightBrightnessStore.notifyScreenLightDidDisappear()
             viewModel.restoreSystemBrightness()
-            
-            // Save state
             viewModel.saveState()
-            
-            // Re-enable sleep mode
-            UIApplication.shared.isIdleTimerDisabled = false
+        }
+        .onChange(of: scenePhase) { newPhase in
+            switch newPhase {
+            case .active:
+                viewModel.applyCurrentBrightnessToSystem()
+            case .inactive, .background:
+                viewModel.restoreSystemBrightness()
+                viewModel.stopScreenLightTimer()
+            @unknown default:
+                break
+            }
         }
         .onChange(of: viewModel.timerCompleted) { completed in
             if completed {
-                // Timer completed - navigate back to home
+                ScreenLightBrightnessStore.notifyScreenLightDidDisappear()
                 viewModel.restoreSystemBrightness()
                 viewModel.saveState()
-                // Reset completion flag
                 viewModel.timerCompleted = false
                 viewModel.screenLightTimerDuration = 0
                 isPresented = false
+                onTimerCompletedAndDismissed?()
             }
         }
-        .sheet(isPresented: Binding(
-            get: { viewModel.showMenuBottomSheet && !viewModel.showInstructionSheet },
-            set: { newValue in
-                viewModel.showMenuBottomSheet = newValue
-                if !newValue {
-                    // When menu sheet is dismissed, check if we need to open timer sheet
-                    viewModel.showMenuCard = false
-                    if viewModel.pendingTimerSheet {
-                        viewModel.pendingTimerSheet = false
-                        // Use async to ensure menu sheet is fully dismissed
-                        DispatchQueue.main.async {
-                            viewModel.showTimerBottomSheet = true
+        .modifier(ScreenLightMenuSheetModifier(
+            isPresented: Binding(
+                get: { viewModel.showMenuBottomSheet && !viewModel.showInstructionSheet },
+                set: { newValue in
+                    viewModel.showMenuBottomSheet = newValue
+                    if !newValue {
+                        viewModel.showMenuCard = false
+                        if viewModel.pendingTimerSheet {
+                            viewModel.pendingTimerSheet = false
+                            DispatchQueue.main.async { viewModel.showTimerBottomSheet = true }
                         }
                     }
                 }
-            }
-        )) {
-            menuCardBottomSheet
-                .presentationDetents([.height(200)])
-                .presentationDragIndicator(.hidden)
-                .presentationBackground(AppTheme.Colors.bottomSheetBackground)
-                .interactiveDismissDisabled(false)
-        }
-        .sheet(isPresented: Binding(
-            get: { viewModel.showTimerBottomSheet },
-            set: { newValue in
-                viewModel.showTimerBottomSheet = newValue
-                if !newValue {
-                    // Timer sheet dismissed (Cancel, drag, or after SET) — always reopen menu sheet
-                    viewModel.pendingMenuCard = false
-                    DispatchQueue.main.async {
-                        viewModel.showMenuCard = true
-                        viewModel.showMenuBottomSheet = true
+            ),
+            menuContent: { menuCardBottomSheet }
+        ))
+        .modifier(ScreenLightTimerSheetModifier(
+            isPresented: Binding(
+                get: { viewModel.showTimerBottomSheet },
+                set: { newValue in
+                    viewModel.showTimerBottomSheet = newValue
+                    if !newValue {
+                        viewModel.pendingMenuCard = false
+                        guard !viewModel.dismissedTimerSheetForPremiumAlert else {
+                            viewModel.dismissedTimerSheetForPremiumAlert = false
+                            return
+                        }
+                        DispatchQueue.main.async {
+                            viewModel.showMenuCard = true
+                            viewModel.showMenuBottomSheet = true
+                        }
                     }
                 }
+            ),
+            viewModel: viewModel,
+            timerSheetDetent: $timerSheetDetent
+        ))
+        .overlay {
+            if premiumPresenter.showPremiumFeatureAlert {
+                PremiumFeatureAlertView(
+                    isPresented: Binding(
+                        get: { premiumPresenter.showPremiumFeatureAlert },
+                        set: { premiumPresenter.showPremiumFeatureAlert = $0 }
+                    ),
+                    onUpgrade: {
+                        premiumPresenter.showPremiumFeatureAlert = false
+                        showPaywallSheet = true
+                    },
+                    onCancel: {
+                        premiumPresenter.showPremiumFeatureAlert = false
+                        if viewModel.reopenTimerSheetWhenPaywallDismissed {
+                            viewModel.reopenTimerSheetWhenPaywallDismissed = false
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                viewModel.showTimerBottomSheet = true
+                            }
+                        }
+                    }
+                )
+                .zIndex(100)
             }
-        ), onDismiss: {
-            timerSheetDetent = PresentationDetent.medium
-        }) {
-            ScreenLightTimerBottomSheetView(
-                viewModel: viewModel,
-                isPresented: $viewModel.showTimerBottomSheet,
-                selectedDetent: $timerSheetDetent
-            )
-            .presentationDetents([PresentationDetent.medium, PresentationDetent.large], selection: $timerSheetDetent)
-            .presentationDragIndicator(Visibility.visible)
-            .presentationBackground(AppTheme.Colors.bottomSheetBackground)
+        }
+        .fullScreenCover(isPresented: $showPaywallSheet) {
+            AccessPremiumView(isPresented: $showPaywallSheet, purchaseManager: purchaseManager)
+        }
+        .onChange(of: showPaywallSheet) { isShowing in
+            if !isShowing, viewModel.reopenTimerSheetWhenPaywallDismissed {
+                viewModel.reopenTimerSheetWhenPaywallDismissed = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    viewModel.showTimerBottomSheet = true
+                }
+            }
         }
     }
     
@@ -182,6 +238,7 @@ struct ScreenLightView: View {
             .clipShape(RoundedRectangle(cornerRadius: 50, style: .continuous))
             .padding(.horizontal, AppTheme.Spacing.xl)
             .shadow(color: Color.black.opacity(0.3), radius: 20, x: 0, y: 10)
+            .frame(maxWidth: UIDevice.current.userInterfaceIdiom == .pad ? AppConstants.Layout.maxContentWidthIPad : nil)
         }
         .allowsHitTesting(true)
         .contentShape(Rectangle())
@@ -199,16 +256,16 @@ struct ScreenLightView: View {
                 brightnessSlider
                 HStack(spacing: 0) {
                     timerButton
-                    Spacer(minLength: AppConstants.Layout.bottomNavInternalSpacing)
+                    Spacer(minLength: AppConstants.Layout.bottomNavBetweenIconsSpacing)
                     timerSettingButton
-                    Spacer(minLength: AppConstants.Layout.bottomNavInternalSpacing)
+                    Spacer(minLength: AppConstants.Layout.bottomNavBetweenIconsSpacing)
                     homeButton
                 }
                 .frame(maxWidth: .infinity)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, AppConstants.Layout.bottomSheetContentHorizontalInset)
-            .padding(.bottom, 0)
+            .padding(.bottom, AppTheme.Spacing.sm)
         }
         .frame(maxWidth: .infinity)
         .background(AppTheme.Colors.bottomSheetBackground)
@@ -393,8 +450,71 @@ struct ScreenLightView: View {
     }
 }
 
+// MARK: - Screen Light Menu Sheet (iPad: full-screen at bottom; iPhone: sheet)
+
+private struct ScreenLightMenuSheetModifier<MenuContent: View>: ViewModifier {
+    @Binding var isPresented: Bool
+    let menuContent: () -> MenuContent
+
+    func body(content: Content) -> some View {
+        let isIPad = UIDevice.current.userInterfaceIdiom == .pad
+        return Group {
+            if isIPad {
+                AnyView(content.fullScreenCover(isPresented: $isPresented) {
+                    menuContent().bottomAnchoredSheetContent()
+                })
+            } else {
+                AnyView(content.sheet(isPresented: $isPresented) {
+                    menuContent()
+                        .presentationDetents([.height(200 * AppConstants.ipadScale)])
+                        .presentationDragIndicator(.hidden)
+                        .presentationBackground(AppTheme.Colors.bottomSheetBackground)
+                        .interactiveDismissDisabled(false)
+                })
+            }
+        }
+    }
+}
+
+// MARK: - Screen Light Timer Sheet (iPad: full-screen at bottom; iPhone: sheet)
+
+private struct ScreenLightTimerSheetModifier: ViewModifier {
+    @Binding var isPresented: Bool
+    @ObservedObject var viewModel: ScreenLightViewModel
+    @Binding var timerSheetDetent: PresentationDetent
+
+    func body(content: Content) -> some View {
+        let isIPad = UIDevice.current.userInterfaceIdiom == .pad
+        return Group {
+            if isIPad {
+                AnyView(content.fullScreenCover(isPresented: $isPresented, onDismiss: { timerSheetDetent = .medium }) {
+                    timerSheetContent.bottomAnchoredSheetContent()
+                })
+            } else {
+                AnyView(content.sheet(isPresented: $isPresented, onDismiss: { timerSheetDetent = .medium }) {
+                    timerSheetContent
+                        .presentationDetents([.medium, .large], selection: $timerSheetDetent)
+                        .presentationDragIndicator(.visible)
+                        .presentationBackground(AppTheme.Colors.bottomSheetBackground)
+                })
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var timerSheetContent: some View {
+        ScreenLightTimerBottomSheetView(
+            viewModel: viewModel,
+            isPresented: $viewModel.showTimerBottomSheet,
+            selectedDetent: $timerSheetDetent
+        )
+    }
+}
+
 // MARK: - Preview
 
 #Preview {
     ScreenLightView(isPresented: .constant(true))
+        .environmentObject(PurchaseManager())
+        .environmentObject(PremiumSheetPresenter())
 }

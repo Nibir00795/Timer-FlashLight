@@ -9,10 +9,12 @@ import SwiftUI
 
 struct TimerBottomSheetView: View {
     // MARK: - Properties
-    
+
     @ObservedObject var viewModel: HomeViewModel
     @Binding var isPresented: Bool
     @Binding var selectedDetent: PresentationDetent
+    @EnvironmentObject private var premiumPresenter: PremiumSheetPresenter
+    @EnvironmentObject private var purchaseManager: PurchaseManager
     
     @State private var selectedPreset: TimerPreset = .fiveMin  // 5 min default
     @State private var isCustomExpanded: Bool = false
@@ -108,6 +110,14 @@ struct TimerBottomSheetView: View {
             }
             selectedHours = min(23, totalSeconds / 3600)
             selectedMinutes = min(59, (totalSeconds % 3600) / 60)
+            // Free users: don't open with Custom selected; show 5 Min instead
+            if !purchaseManager.isPremiumUnlocked && selectedPreset == .custom {
+                selectedPreset = .fiveMin
+                isCustomExpanded = false
+                selectedDetent = PresentationDetent.medium
+                selectedHours = 0
+                selectedMinutes = 5
+            }
         }
     }
     
@@ -128,6 +138,14 @@ struct TimerBottomSheetView: View {
     
     private func presetButton(preset: TimerPreset, layout: TimerSheetLayout) -> some View {
         Button(action: {
+            if preset == .custom, !purchaseManager.isPremiumUnlocked {
+                premiumPresenter.pendingReopenHomeTimerSheetOnPaywallDismiss = true
+                isPresented = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    premiumPresenter.showPremiumFeatureAlert = true
+                }
+                return
+            }
             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                 selectedPreset = preset
                 if preset == .custom {
@@ -142,24 +160,35 @@ struct TimerBottomSheetView: View {
                 }
             }
         }) {
+            let isPremium = purchaseManager.isPremiumUnlocked
+            let isCustom = (preset == .custom)
+            let isCustomLocked = isCustom && !isPremium
             HStack(spacing: AppTheme.Spacing.xs) {
-                if selectedPreset == preset {
+                if selectedPreset == preset && !isCustomLocked {
                     ZStack {
                         Circle()
                             .fill(AppTheme.Colors.success)
                             .frame(width: layout.radioSize, height: layout.radioSize)
-                        Image(systemName: "checkmark")
-                            .font(.system(size: layout.radioCheckmarkSize, weight: .bold))
+                        Image("ic_checkmark")
+                            .resizable()
+                            .renderingMode(.template)
                             .foregroundColor(.white)
+                            .frame(width: layout.radioCheckmarkSize, height: layout.radioCheckmarkSize)
                     }
                 } else {
                     Circle()
-                        .stroke(AppTheme.Colors.textTertiary, lineWidth: AppTheme.Border.width)
+                        .stroke(isCustomLocked ? AppTheme.Colors.textMuted : AppTheme.Colors.textTertiary, lineWidth: AppTheme.Border.width)
                         .frame(width: layout.radioSize, height: layout.radioSize)
                 }
                 Text(preset.displayText)
                     .font(.custom(AppTheme.Typography.soraFontName, size: layout.presetFontSize))
-                    .foregroundColor(selectedPreset == preset ? AppTheme.Colors.success : AppTheme.Colors.textTertiary)
+                    .foregroundColor(isCustomLocked ? AppTheme.Colors.textMuted : (selectedPreset == preset ? AppTheme.Colors.success : AppTheme.Colors.textTertiary))
+                if isCustom, !purchaseManager.isPremiumUnlocked {
+                    Image("ic_crown")
+                        .resizable()
+                        .renderingMode(.original)
+                        .frame(width: 18, height: 18)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, layout.presetHorizontalPadding)
@@ -168,7 +197,7 @@ struct TimerBottomSheetView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: AppTheme.CornerRadius.extraLarge)
                     .stroke(
-                        selectedPreset == preset ? AppTheme.Colors.success : AppTheme.Colors.textTertiary,
+                        isCustomLocked ? AppTheme.Colors.textMuted : (selectedPreset == preset ? AppTheme.Colors.success : AppTheme.Colors.textTertiary),
                         lineWidth: AppTheme.Border.width
                     )
             )
@@ -302,5 +331,7 @@ struct RoundedCorner: Shape {
             )
         }
     }
+    .environmentObject(PremiumSheetPresenter())
+    .environmentObject(PurchaseManager())
     .preferredColorScheme(.dark)
 }

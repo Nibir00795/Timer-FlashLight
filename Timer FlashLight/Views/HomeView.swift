@@ -6,13 +6,20 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct HomeView: View {
     // MARK: - Properties
-    
+
+    var onMenuTap: (() -> Void)? = nil
+    @EnvironmentObject private var premiumPresenter: PremiumSheetPresenter
+    @EnvironmentObject private var purchaseManager: PurchaseManager
+
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var viewModel = HomeViewModel()
     @State private var showScreenLight = false
+    @State private var showClosingToastThenSuspend = false
+    @State private var flashlightAlertDontShowAgain = false
     @State private var timerSheetDetent: PresentationDetent = PresentationDetent.medium
     
     // MARK: - Body
@@ -24,7 +31,7 @@ struct HomeView: View {
                 .ignoresSafeArea()
             
             ZStack {
-                // Main layout structure
+                // Main layout structure (respect safe area for top spacing)
                 VStack(spacing: 0) {
                     topHeader
                         .padding(.top, AppConstants.Layout.upgradeButtonTopSpacing)
@@ -33,29 +40,61 @@ struct HomeView: View {
                     Spacer()
                     // Single bottom content area: brightness + timer row share same visible edges
                     bottomSection
+                    if !purchaseManager.isPremiumUnlocked {
+                        BannerAdView(adUnitID: AppConstants.AdMob.mainScreenBanner)
+                            .frame(height: 50)
+                            .padding(.bottom, AppTheme.Spacing.sm)
+                    }
                 }
                 powerButton
             }
+
+            // Flashlight-on alert (same style as Screen Light instruction overlay)
+            if viewModel.showFlashlightOnAlert {
+                FlashlightOnAlertView(dontShowAgain: $flashlightAlertDontShowAgain, onOK: {
+                    viewModel.dismissFlashlightOnAlert(dontShowAgain: flashlightAlertDontShowAgain)
+                })
+                .zIndex(100)
+            }
         }
         .toast(message: viewModel.toastMessage, isPresented: $viewModel.showToast)
-        .sheet(isPresented: $viewModel.showTimerBottomSheet, onDismiss: {
-            timerSheetDetent = PresentationDetent.medium
-        }) {
-            TimerBottomSheetView(
-                viewModel: viewModel,
-                isPresented: $viewModel.showTimerBottomSheet,
-                selectedDetent: $timerSheetDetent
-            )
-            .presentationDetents([PresentationDetent.medium, PresentationDetent.large], selection: $timerSheetDetent)
-            .presentationDragIndicator(Visibility.visible)
-            .presentationBackground(AppTheme.Colors.cardBackground)
-        }
+        .modifier(HomeTimerSheetModifier(viewModel: viewModel, timerSheetDetent: $timerSheetDetent))
         .fullScreenCover(isPresented: $showScreenLight) {
-            ScreenLightView(isPresented: $showScreenLight)
+            ScreenLightView(
+                isPresented: $showScreenLight,
+                onTimerCompletedAndDismissed: { showClosingToastThenSuspend = true },
+                onScreenLightTimerDidStart: { viewModel.stopTimer() }
+            )
+            .environmentObject(premiumPresenter)
+            .environmentObject(purchaseManager)
+        }
+        .onChange(of: viewModel.showFlashlightOnAlert) { newValue in
+            if newValue { flashlightAlertDontShowAgain = false }
+        }
+        .onChange(of: showClosingToastThenSuspend) { newValue in
+            guard newValue else { return }
+            viewModel.showToastMessage("App will close now")
+            showClosingToastThenSuspend = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                UIApplication.shared.sendToBackground()
+            }
+        }
+        .onAppear {
+            viewModel.applyAutoFlashOnStartupIfNeeded()
+            premiumPresenter.reopenHomeTimerSheet = {
+                viewModel.showTimerBottomSheet = true
+            }
         }
         .onChange(of: scenePhase) { newPhase in
-            if newPhase == .active {
+            switch newPhase {
+            case .active:
                 viewModel.refreshBatteryLevel()
+                viewModel.refreshSavedTimerDuration()
+                viewModel.reapplyFlashlightIfNeeded()
+            case .inactive, .background:
+                viewModel.handleAppEnteredBackground()
+            @unknown default:
+                break
             }
         }
     }
@@ -64,9 +103,11 @@ struct HomeView: View {
     
     private var topHeader: some View {
         ZStack {
-            // Upgrade button - centered
-            upgradeButton
-            
+            // Upgrade button - centered (hidden when premium)
+            if !purchaseManager.isPremiumUnlocked {
+                upgradeButton
+            }
+
             // Menu button - right side, 40pt from right
             HStack {
                 Spacer()
@@ -78,7 +119,7 @@ struct HomeView: View {
     }
     
     private var menuButton: some View {
-        Button(action: {}) {
+        Button(action: { onMenuTap?() }) {
             Image("ic_menu")
                 .resizable()
                 .renderingMode(.template)
@@ -88,7 +129,7 @@ struct HomeView: View {
     }
     
     private var upgradeButton: some View {
-        Button(action: {}) {
+        Button(action: { premiumPresenter.showPremiumSheet = true }) {
             HStack(spacing: AppTheme.Spacing.xs) {
                 Image("ic_crown")
                     .resizable()
@@ -148,7 +189,7 @@ struct HomeView: View {
             // Speed label (1X, 1.5X, 2X)
             if viewModel.isSOSOn {
                 Text(viewModel.sosSpeed.displayText)
-                    .font(.custom(AppTheme.Typography.sairaFontName, size: 24))
+                    .font(.custom(AppTheme.Typography.sairaFontName, size: AppTheme.Typography.scaledSize(24)))
                     .foregroundColor(AppTheme.Colors.textTertiary)
                     .padding(.top, AppTheme.Spacing.sm)
             }
@@ -199,12 +240,10 @@ struct HomeView: View {
         let circleSize = buttonSize + 20 // 20pt spacing between button and outer circle
         let sparkSize = circleSize + 120 // Spark extends 120pt beyond the circle
         
-        return Button(action: { viewModel.toggleFlashlight() }) {
-            ZStack {
-                // Solid power button icon - innermost layer, always shown
-                // Uses ic_power_on_state.svg for on state (green circle with white icon)
-                // Uses ic_power.svg for off state (gray circle with gray icon)
-                // Animated transition between states
+        return ZStack {
+            // Decorative layers: not tappable so hit-testing passes through to the power icon button only
+            Group {
+                // Solid power button icon (visual layer)
                 Image(viewModel.isFlashlightOn ? "ic_power_on_state" : "ic_power")
                     .resizable()
                     .renderingMode(.original)
@@ -212,8 +251,6 @@ struct HomeView: View {
                     .animation(.easeInOut(duration: 0.3), value: viewModel.isFlashlightOn)
                     .zIndex(1)
                 
-                // Outer circle - gray base always visible, green overlay when on
-                // Gray base circle - always shown as background
                 Circle()
                     .stroke(
                         AppTheme.Colors.border,
@@ -222,12 +259,8 @@ struct HomeView: View {
                     .frame(width: circleSize, height: circleSize)
                     .zIndex(2)
                 
-                // Green outer circle overlay - only when flashlight is on
                 if viewModel.isFlashlightOn {
                     if viewModel.isTimerRunning {
-                        // Timer running: show unfilling circle (starts filled, unfills clockwise as timerProgress decreases)
-                        // Gray circle remains visible behind as it unfills
-                        // Use trim from 0 to timerProgress and rotate to make it unfill clockwise
                         Circle()
                             .trim(from: 0, to: viewModel.timerProgress)
                             .stroke(
@@ -235,11 +268,10 @@ struct HomeView: View {
                                 style: StrokeStyle(lineWidth: 4, lineCap: .round)
                             )
                             .frame(width: circleSize, height: circleSize)
-                            .rotationEffect(.degrees(90)) // Rotate 90 degrees to start from right, unfill clockwise
+                            .rotationEffect(.degrees(90))
                             .animation(.linear(duration: 1.0), value: viewModel.timerProgress)
                             .zIndex(3)
                     } else {
-                        // No timer: show filled green circle
                         Circle()
                             .stroke(
                                 AppTheme.Colors.success,
@@ -250,19 +282,29 @@ struct HomeView: View {
                     }
                 }
                 
-                // Spark/radial icon - outermost layer, only shown when power is on
-                // Must be the topmost layer with highest zIndex and largest size
-                // Animated opacity: brightens up on turn-on, dims off on turn-off (longer duration)
                 Image("ic_power_on")
                     .resizable()
                     .renderingMode(.original)
                     .frame(width: sparkSize, height: sparkSize)
                     .opacity(viewModel.sparkOpacity)
                     .animation(.easeInOut(duration: 0.8), value: viewModel.sparkOpacity)
-                    .zIndex(4) // Highest zIndex to ensure it's on top
+                    .zIndex(4)
             }
+            .allowsHitTesting(false)
+            
+            // Only the power icon is tappable (button area = icon size only, not the dots/spark)
+            Button(action: { viewModel.powerButtonTapped() }) {
+                Image(viewModel.isFlashlightOn ? "ic_power_on_state" : "ic_power")
+                    .resizable()
+                    .renderingMode(.original)
+                    .frame(width: buttonSize, height: buttonSize)
+            }
+            .buttonStyle(.plain)
+            .frame(width: buttonSize, height: buttonSize)
+            .contentShape(Circle())
+            .zIndex(5)
         }
-        // Don't disable so action can fire and show toast when SOS is on
+        .frame(width: sparkSize, height: sparkSize)
         .opacity(viewModel.isSOSOn ? 0.5 : 1.0)
     }
     
@@ -352,7 +394,7 @@ struct HomeView: View {
     private var bottomControlsContent: some View {
         HStack(spacing: 0) {
             timerButton
-            Spacer(minLength: AppConstants.Layout.bottomNavInternalSpacing)
+            Spacer(minLength: AppConstants.Layout.bottomNavBetweenIconsSpacing)
             actionButton(
                 icon: "clock",
                 isEnabled: viewModel.isFlashlightOn && !viewModel.isSOSOn,
@@ -366,7 +408,7 @@ struct HomeView: View {
                     }
                 }
             )
-            Spacer(minLength: AppConstants.Layout.bottomNavInternalSpacing)
+            Spacer(minLength: AppConstants.Layout.bottomNavBetweenIconsSpacing)
             actionButton(
                 icon: "iphone",
                 isEnabled: true,
@@ -478,9 +520,11 @@ struct HomeView: View {
                                 .renderingMode(.original)
                                 .frame(width: AppConstants.IconSize.bottomIcon, height: AppConstants.IconSize.bottomIcon)
                         } else {
-                            Image(systemName: icon)
+                            Image("ic_timer")
+                                .resizable()
+                                .renderingMode(.template)
                                 .foregroundColor(AppTheme.Colors.success)
-                                .font(.system(size: 24))
+                                .frame(width: AppConstants.IconSize.bottomIcon, height: AppConstants.IconSize.bottomIcon)
                         }
                     }
                 )
@@ -489,9 +533,45 @@ struct HomeView: View {
     }
 }
 
+// MARK: - Home Timer Sheet (iPad: full-screen at bottom; iPhone: sheet)
+
+private struct HomeTimerSheetModifier: ViewModifier {
+    @ObservedObject var viewModel: HomeViewModel
+    @Binding var timerSheetDetent: PresentationDetent
+
+    func body(content: Content) -> some View {
+        let isIPad = UIDevice.current.userInterfaceIdiom == .pad
+        return Group {
+            if isIPad {
+                AnyView(content.fullScreenCover(isPresented: $viewModel.showTimerBottomSheet, onDismiss: { timerSheetDetent = .medium }) {
+                    timerSheetContent.bottomAnchoredSheetContent()
+                })
+            } else {
+                AnyView(content.sheet(isPresented: $viewModel.showTimerBottomSheet, onDismiss: { timerSheetDetent = .medium }) {
+                    timerSheetContent
+                        .presentationDetents([.medium, .large], selection: $timerSheetDetent)
+                        .presentationDragIndicator(.visible)
+                        .presentationBackground(AppTheme.Colors.cardBackground)
+                })
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var timerSheetContent: some View {
+        TimerBottomSheetView(
+            viewModel: viewModel,
+            isPresented: $viewModel.showTimerBottomSheet,
+            selectedDetent: $timerSheetDetent
+        )
+    }
+}
+
 // MARK: - Preview
 
 #Preview {
     HomeView()
+        .environmentObject(PremiumSheetPresenter())
+        .environmentObject(PurchaseManager())
         .preferredColorScheme(.dark)
 }

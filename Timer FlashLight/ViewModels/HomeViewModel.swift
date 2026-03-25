@@ -28,9 +28,13 @@ class HomeViewModel: ObservableObject {
     @Published var flashlightIntensity: Double = 1.0 // Flashlight intensity (0.0 to 1.0) - app-only value
     
     // MARK: - Toast Properties
-    
+
     @Published var showToast: Bool = false
     @Published var toastMessage: String = ""
+
+    // MARK: - Flashlight On Alert
+
+    @Published var showFlashlightOnAlert: Bool = false
     
     // MARK: - Bottom Sheet Properties
     
@@ -49,7 +53,8 @@ class HomeViewModel: ObservableObject {
     private var batteryRefreshTimer: Timer?
     private let timerService: TimerService
     private let flashlightService: FlashlightService
-    
+    private var didApplyAutoFlashThisLaunch = false
+
     private static let batteryRefreshInterval: TimeInterval = 60.0 // Fallback when notifications are delayed
     
     // MARK: - SOS Speed Enum
@@ -128,6 +133,7 @@ class HomeViewModel: ObservableObject {
         
         // Load flashlight intensity from UserDefaults or device
         loadFlashlightIntensity()
+        loadSavedTimerDuration()
     }
     
     @objc private func batteryLevelDidChange() {
@@ -137,6 +143,26 @@ class HomeViewModel: ObservableObject {
     /// Call when app becomes active to refresh battery level (e.g. returning from background)
     func refreshBatteryLevel() {
         updateBatteryLevel()
+    }
+
+    /// Call when app becomes active so hardware matches UI (e.g. flashlight may have been turned off by system while backgrounded).
+    func reapplyFlashlightIfNeeded() {
+        if isFlashlightOn {
+            flashlightService.turnOn(intensity: Float(flashlightIntensity))
+        }
+    }
+
+    /// Call once when home appears at launch. If Auto-Flash on Startup is enabled, turns the flashlight on without showing the alert.
+    func applyAutoFlashOnStartupIfNeeded() {
+        guard !didApplyAutoFlashThisLaunch else { return }
+        didApplyAutoFlashThisLaunch = true
+        guard UserDefaults.standard.bool(forKey: AppConstants.UserDefaultsKeys.autoFlashOnStartup) else { return }
+        guard !isFlashlightOn else { return }
+        isFlashlightOn = true
+        flashlightService.turnOn(intensity: Float(flashlightIntensity))
+        withAnimation(.easeOut(duration: 0.8)) {
+            sparkOpacity = 1.0
+        }
     }
     
     private func updateBatteryLevel() {
@@ -169,8 +195,11 @@ class HomeViewModel: ObservableObject {
                 self.timerRemaining -= 1
             } else {
                 self.stopTimer()
-                // Turn off power when timer ends
                 self.turnOffFlashlight()
+                self.showToastMessage("App will close now")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    UIApplication.shared.sendToBackground()
+                }
             }
         }
     }
@@ -197,9 +226,10 @@ class HomeViewModel: ObservableObject {
     /// Sets a timer with the given duration and starts it immediately (if flashlight is on and SOS is off)
     /// If a timer is already running, it will be replaced with the new one and started from the beginning
     func setTimer(duration: TimeInterval) {
-        // Update saved timer duration
-        savedTimerDuration = duration
-        
+        let clamped = max(AppConstants.Timer.minDuration, min(AppConstants.Timer.maxDuration, duration))
+        savedTimerDuration = clamped
+        UserDefaults.standard.set(clamped, forKey: AppConstants.UserDefaultsKeys.savedTimerDuration)
+
         // Stop any running timer before starting new one
         if isTimerRunning {
             stopTimer()
@@ -207,12 +237,54 @@ class HomeViewModel: ObservableObject {
         
         // Start the timer immediately when setting (if flashlight is on and SOS is off)
         if isFlashlightOn && !isSOSOn {
-            startTimer(duration: duration)
+            startTimer(duration: clamped)
         }
+    }
+
+    private func loadSavedTimerDuration() {
+        if UserDefaults.standard.object(forKey: AppConstants.UserDefaultsKeys.savedTimerDuration) != nil {
+            let saved = UserDefaults.standard.double(forKey: AppConstants.UserDefaultsKeys.savedTimerDuration)
+            savedTimerDuration = max(AppConstants.Timer.minDuration, min(AppConstants.Timer.maxDuration, saved))
+        }
+        // Else keep default 5 minutes set on property
+    }
+
+    /// Call when app becomes active so the displayed timer value stays in sync (e.g. after returning from background).
+    func refreshSavedTimerDuration() {
+        loadSavedTimerDuration()
     }
     
     // MARK: - Flashlight Methods
-    
+
+    /// Call when user taps the power button. Shows "flashlight on" alert on first use unless user chose "Don't show again".
+    func powerButtonTapped() {
+        if isSOSOn {
+            showToastMessage("Turn off SOS first")
+            return
+        }
+        if isFlashlightOn {
+            toggleFlashlight()
+            return
+        }
+        // Turning on: show alert unless user opted out
+        if UserDefaults.standard.bool(forKey: AppConstants.UserDefaultsKeys.dontShowFlashlightOnAlert) {
+            toggleFlashlight()
+        } else {
+            showFlashlightOnAlert = true
+        }
+    }
+
+    /// Call when user dismisses the flashlight-on alert with OK. Saves "don't show again" and turns on the flashlight.
+    func dismissFlashlightOnAlert(dontShowAgain: Bool) {
+        if dontShowAgain {
+            UserDefaults.standard.set(true, forKey: AppConstants.UserDefaultsKeys.dontShowFlashlightOnAlert)
+        }
+        showFlashlightOnAlert = false
+        if !isFlashlightOn {
+            toggleFlashlight()
+        }
+    }
+
     func toggleFlashlight() {
         // Show toast if SOS is on
         if isSOSOn {
@@ -283,6 +355,18 @@ class HomeViewModel: ObservableObject {
             sparkOpacity = 0.0
         }
         // Stop timer if running
+        if isTimerRunning {
+            stopTimer()
+        }
+    }
+
+    /// Call when app enters background. iOS turns off the flashlight; sync UI and stop timer.
+    func handleAppEnteredBackground() {
+        if isFlashlightOn {
+            isFlashlightOn = false
+            flashlightService.turnOff()
+            sparkOpacity = 0.0
+        }
         if isTimerRunning {
             stopTimer()
         }

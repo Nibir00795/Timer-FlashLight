@@ -28,7 +28,11 @@ class ScreenLightViewModel: ObservableObject {
     @Published var pendingTimerSheet: Bool = false // Flag to open timer sheet after menu dismisses
     @Published var pendingMenuCard: Bool = false // Flag to open menu card after timer sheet dismisses
     @Published var timerCompleted: Bool = false // Flag to indicate timer completion
-    
+    /// When true, timer sheet was dismissed to show premium alert — do not reopen menu when timer sheet closes.
+    var dismissedTimerSheetForPremiumAlert: Bool = false
+    /// When true, reopen timer sheet when paywall (or alert) is dismissed (e.g. user cancelled from Custom tap flow).
+    var reopenTimerSheetWhenPaywallDismissed: Bool = false
+
     // MARK: - Color Presets
     
     static let colorPresets: [String] = [
@@ -103,7 +107,10 @@ class ScreenLightViewModel: ObservableObject {
     func saveSystemBrightness() {
         systemBrightness = brightnessService.getSystemBrightness()
     }
-    
+
+    /// Saved system brightness to restore when leaving Screen Light or when app goes to background.
+    var savedSystemBrightnessForRestore: Double { systemBrightness }
+
     func restoreSystemBrightness() {
         brightnessService.setSystemBrightness(systemBrightness)
     }
@@ -115,16 +122,29 @@ class ScreenLightViewModel: ObservableObject {
         case right
     }
     
-    func changeColor(direction: SwipeDirection) {
+    /// - Parameters:
+    ///   - direction: Swipe direction (left = next color, right = previous).
+    ///   - isPremium: If false, only indices 0..<freeColorCount are allowed; going past calls onLimitReached.
+    ///   - onLimitReached: Called when a free user tries to swipe past the free color limit (short paywall trigger).
+    func changeColor(direction: SwipeDirection, isPremium: Bool = true, onLimitReached: (() -> Void)? = nil) {
         guard !showInstructionSheet else { return } // Block if instruction sheet is showing
-        
+
+        let count = Self.colorPresets.count
+        let nextIndex: Int
         switch direction {
         case .left:
-            currentColorIndex = (currentColorIndex + 1) % Self.colorPresets.count
+            nextIndex = (currentColorIndex + 1) % count
         case .right:
-            currentColorIndex = (currentColorIndex - 1 + Self.colorPresets.count) % Self.colorPresets.count
+            nextIndex = (currentColorIndex - 1 + count) % count
         }
-        
+
+        if !isPremium && nextIndex >= AppConstants.Premium.freeColorCount {
+            onLimitReached?()
+            return
+        }
+
+        currentColorIndex = nextIndex
+
         // Save color state immediately
         UserDefaults.standard.set(currentColorIndex, forKey: AppConstants.UserDefaultsKeys.screenLightColorIndex)
     }
@@ -137,7 +157,7 @@ class ScreenLightViewModel: ObservableObject {
         showMenuCard = true
         showMenuBottomSheet = true
     }
-    
+
     // MARK: - Menu Card
     
     /// Toggle menu bottom sheet: tap on background shows sheet when hidden, hides sheet when visible. No auto-close.
@@ -149,12 +169,16 @@ class ScreenLightViewModel: ObservableObject {
     }
     
     // MARK: - Timer Methods
-    
+
+    /// Called when Screen Light timer starts so the app can stop the other (Home) timer. Only one timer active at a time.
+    var onScreenLightTimerDidStart: (() -> Void)?
+
     func startScreenLightTimer(duration: TimeInterval) {
+        onScreenLightTimerDidStart?()
         screenLightTimerDuration = duration
         screenLightTimerRemaining = duration
         isScreenLightTimerRunning = true
-        
+
         screenLightTimer?.invalidate()
         timerCompleted = false // Reset completion flag
         screenLightTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -198,6 +222,12 @@ class ScreenLightViewModel: ObservableObject {
     }
     
     // MARK: - Brightness Methods
+    
+    /// Applies the current screenLightBrightness to the device. Use when entering screen light view
+    /// so the physical brightness matches the slider even if the value did not "change".
+    func applyCurrentBrightnessToSystem() {
+        brightnessService.setSystemBrightness(screenLightBrightness)
+    }
     
     func setScreenLightBrightness(_ brightness: Double) {
         let clampedBrightness = max(0.0, min(1.0, brightness))

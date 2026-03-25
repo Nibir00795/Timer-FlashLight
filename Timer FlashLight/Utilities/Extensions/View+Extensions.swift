@@ -6,8 +6,55 @@
 //
 
 import SwiftUI
+import UIKit
 
 extension View {
+    /// On iPad, wraps content in a VStack with Spacer above so the sheet content sits at the bottom of a full-screen cover.
+    func bottomAnchoredSheetContent() -> some View {
+        Group {
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    self
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                self
+            }
+        }
+    }
+
+    /// Presents as fullScreenCover on iPad (content at bottom) and as sheet on iPhone.
+    func conditionalSheetOrFullScreenCover<Content: View>(
+        isPresented: Binding<Bool>,
+        onDismiss: (() -> Void)?,
+        forIPadContent: @escaping () -> Content,
+        forPhoneContent: @escaping () -> Content
+    ) -> some View where Content: View {
+        Group {
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                self.fullScreenCover(isPresented: isPresented, onDismiss: onDismiss, content: forIPadContent)
+            } else {
+                self.sheet(isPresented: isPresented, onDismiss: onDismiss, content: forPhoneContent)
+            }
+        }
+    }
+
+    /// On iPad, constrains content to a max width and centers it; on iPhone, passes through unchanged.
+    func iPadFriendlyContent() -> some View {
+        Group {
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    self.frame(maxWidth: AppConstants.Layout.maxContentWidthIPad)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                self
+            }
+        }
+    }
     /// Applies the standard card style used throughout the app
     func cardStyle() -> some View {
         self
